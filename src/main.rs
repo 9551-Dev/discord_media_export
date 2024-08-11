@@ -227,7 +227,7 @@ fn download_media_links(links: Vec<Url>,output_folder_path: &str,bypass_server: 
             continue;
         }
 
-        println!("Successfully saved file: {}\n",filename);
+        println!("Successfully saved file {}\n",filename);
     }
 }
 
