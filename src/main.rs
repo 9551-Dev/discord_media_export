@@ -1,4 +1,5 @@
 use std::{env,fs,io::Write,path::{self, Path},collections::HashMap};
+use itertools::Itertools;
 use serde_json;
 use serde::Deserialize;
 use linkify::{LinkFinder,LinkKind};
@@ -20,7 +21,14 @@ struct ChannelData{
 #[derive(Deserialize)]
 struct ChannelMessages{
     Contents: String,
-    Attachments: String
+    Attachments: String,
+    Timestamp: String
+}
+
+#[derive(Clone)]
+struct TimestampedUrl{
+    url: Url,
+    stamp: String
 }
 
 fn main() -> std::process::ExitCode {
@@ -48,7 +56,7 @@ fn main() -> std::process::ExitCode {
     let messages: Vec<ChannelMessages> = serde_json::from_str(&channel_messages).unwrap();
 
     display_channel_meta(meta);
-    let matched_links: Vec<Url> = find_links(messages);
+    let matched_links: Vec<TimestampedUrl> = find_links(messages);
     println!("  - {} unique URLs found",matched_links.len());
     let media_links = filter_media_links(matched_links);
     println!("  - {} unique media links found\n",media_links.len());
@@ -58,8 +66,8 @@ fn main() -> std::process::ExitCode {
     std::process::ExitCode::SUCCESS
 }
 
-fn find_links(messages: Vec<ChannelMessages>) -> Vec<Url> {
-    let mut matched_links: Vec<Url> = Vec::new();
+fn find_links(messages: Vec<ChannelMessages>) -> Vec<TimestampedUrl> {
+    let mut matched_links: Vec<TimestampedUrl> = Vec::new();
 
     let link_matcher = LinkFinder::new();
 
@@ -68,22 +76,26 @@ fn find_links(messages: Vec<ChannelMessages>) -> Vec<Url> {
     for msg in &messages {
         for link in link_matcher.links(&msg.Contents) {
             if link.kind() == &LinkKind::Url {
-                matched_links.push(url_normalizer::normalize(
+                let url:TimestampedUrl = TimestampedUrl{url: url_normalizer::normalize(
                     Url::parse(
                         link.as_str()
                     ).unwrap()
-                ).unwrap());
+                ).unwrap(),stamp: msg.Timestamp.clone()};
+
+                matched_links.push(url);
             }
         }
 
         for link in link_matcher.links(&msg.Attachments) {
 
             if link.kind() == &LinkKind::Url {
-                matched_links.push(url_normalizer::normalize(
+                let url:TimestampedUrl = TimestampedUrl{url: url_normalizer::normalize(
                     Url::parse(
                         link.as_str()
                     ).unwrap()
-                ).unwrap());
+                ).unwrap(),stamp: msg.Timestamp.clone()};
+
+                matched_links.push(url);
             }
         }
     }
@@ -91,28 +103,30 @@ fn find_links(messages: Vec<ChannelMessages>) -> Vec<Url> {
     println!("  - {} links found",matched_links.len());
     println!("Normalizing URLs..");
 
-    let mut unique_urls = HashMap::new();
+    let mut unique_urls: HashMap<String,TimestampedUrl> = HashMap::new();
 
     matched_links.iter().for_each(|url| {
         let key = format!(
             "{}{}{}",
-            url.host_str().unwrap_or(""),
-            url.domain().unwrap_or(""),
-            url.path()
+            url.url.host_str().unwrap_or(""),
+            url.url.domain().unwrap_or(""),
+            url.url.path()
         );
         unique_urls.insert(key,url.clone());
     });
 
-    unique_urls.values().cloned().collect()
+    let result: Vec<TimestampedUrl> = unique_urls.values().cloned().collect_vec();
+
+    result
 }
 
-fn filter_media_links(links: Vec<Url>) -> Vec<Url> {
-    let mut result: Vec<Url> = Vec::new();
+fn filter_media_links(links: Vec<TimestampedUrl>) -> Vec<TimestampedUrl> {
+    let mut result: Vec<TimestampedUrl> = Vec::new();
 
     println!("Filtering media links..");
 
     for link in links.iter() {
-        let path:  String = link.path().to_lowercase();
+        let path:  String = link.url.path().to_lowercase();
 
         let media: bool = path.ends_with("mp4")
         || path.ends_with("png")
@@ -166,7 +180,7 @@ fn truncate_filename(filename: &str, max_length: usize) -> String {
 }
 
 const MAX_FILENAME_LENGTH: usize = 100;
-fn download_media_links(links: Vec<Url>,output_folder_path: &str,bypass_server: &str) {
+fn download_media_links(links: Vec<TimestampedUrl>,output_folder_path: &str,bypass_server: &str) {
     let mut i: u32 = 0;
 
     let client   = reqwest::blocking::Client::new();
@@ -174,28 +188,28 @@ fn download_media_links(links: Vec<Url>,output_folder_path: &str,bypass_server: 
 
     for link in links.iter() {
         i += 1;
-        println!("({}/{}) Downloading media from: \"{}\"",i,links.len(),link.as_str());
+        println!("({}/{}) Downloading media from: \"{}\"",i,links.len(),link.url.as_str());
 
-        let mut response = match client.get(link.as_str())
+        let mut response = match client.get(link.url.as_str())
             .header(USER_AGENT,user_agent)
             .send() {
                 Ok(r) => r,
                 Err(e) => {
-                    println!("Error fetching URL {}: {:?}",link.as_str(),e);
+                    println!("Error fetching URL {}: {:?}",link.url.as_str(),e);
                     continue;
                 }
             };
 
         let mut bytes = Vec::new();
         if let Err(e) = response.copy_to(&mut bytes) {
-            println!("Error reading response body for {}: {:?}", link.as_str(), e);
+            println!("Error reading response body for {}: {:?}", link.url.as_str(), e);
             continue;
         }
 
         let body_str = String::from_utf8_lossy(&bytes);
         if body_str.contains("This content is no longer available") {
-            println!("Content unavailable at {}, using bypass server {}",link.as_str(),bypass_server);
-            let new_url = format!("{}{}",bypass_server,link.path());
+            println!("Content unavailable at {}, using bypass server {}",link.url.as_str(),bypass_server);
+            let new_url = format!("{}{}",bypass_server,link.url.path());
             response = match client.get(&new_url)
                 .header(USER_AGENT,user_agent)
                 .send() {
@@ -213,11 +227,12 @@ fn download_media_links(links: Vec<Url>,output_folder_path: &str,bypass_server: 
             }
         }
 
-        let filename = link.path_segments()
+        let filename = format!("{}_{}",link.stamp.replace(' ',"_"),link.url.path_segments()
             .and_then(|segments| segments.last())
-            .unwrap_or("default_filename");
+            .unwrap_or("default_filename")
+        );
 
-        let filename = truncate_filename(filename,MAX_FILENAME_LENGTH);
+        let filename = truncate_filename(&filename,MAX_FILENAME_LENGTH);
 
         let output_path = path::Path::new(output_folder_path);
         let mut file = create_unique_file(output_path,&filename);
