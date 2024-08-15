@@ -120,7 +120,7 @@ fn find_links(messages: Vec<ChannelMessages>) -> Vec<ExtensionStampedUrl> {
         let key = format!(
             "{}{}{}",
             url.url.host_str().unwrap_or(""),
-            url.url.domain().unwrap_or(""),
+            url.url.domain()  .unwrap_or(""),
             url.url.path()
         );
         unique_urls.insert(key,url.clone());
