@@ -60,10 +60,10 @@ fn main() -> std::process::ExitCode {
     display_channel_meta(meta);
 
     let matched_links: Vec<ExtensionStampedUrl> = find_links(messages);
-    println!("  - {} unique URLs found",matched_links.len());
+    println!("| - {} unique URLs found",matched_links.len());
 
     let media_links = filter_media_links(matched_links);
-    println!("  - {} unique media links found\n",media_links.len());
+    println!("| - {} unique media links found\n",media_links.len());
 
     display_extension_host_distribution(&media_links);
     print!("Press Enter to continue...");
@@ -111,7 +111,7 @@ fn find_links(messages: Vec<ChannelMessages>) -> Vec<ExtensionStampedUrl> {
         }
     }
 
-    println!("  - {} links found",matched_links.len());
+    println!("| - {} links found",matched_links.len());
     println!("Normalizing URLs..");
 
     let mut unique_urls: HashMap<String,ExtensionStampedUrl> = HashMap::new();
@@ -165,17 +165,17 @@ fn filter_media_links(links: Vec<ExtensionStampedUrl>) -> Vec<ExtensionStampedUr
     result
 }
 
-fn create_unique_file(path: &Path, filename: &str) -> fs::File {
+fn create_unique_file(path: &Path,filename: &str) -> fs::File {
     let (name, ext) = match filename.rsplit_once('.') {
-        Some((name, ext)) => (name.to_string(), ext.to_string()),
-        None => (filename.to_string(), String::new()),
+        Some((name, ext)) => (name.to_string(),ext.to_string()),
+        None => (filename.to_string(),String::new()),
     };
 
-    let mut final_path = path.join(format!("{}.{}", name, ext));
+    let mut final_path = path.join(format!("{}.{}",name,ext));
     let mut counter = 1;
 
     while final_path.exists() {
-        final_path = path.join(format!("{}_{}.{ext}", name, counter));
+        final_path = path.join(format!("{}_{}.{ext}",name,counter));
         counter += 1;
     }
 
@@ -212,41 +212,41 @@ fn download_media_links(links: Vec<ExtensionStampedUrl>,output_folder_path: &str
 
     for link in links.iter() {
         i += 1;
-        println!("({:.1}% {}/{}) Downloading media from: \"{}\"",(i as f64)/(links.len() as f64)*100f64,i,links.len(),link.url.as_str());
+        println!("({:.1}% {i}/{}) Downloading media from: \"{}\"",(i as f64)/(links.len() as f64)*100f64,links.len(),link.url.as_str());
 
         let mut response = match client.get(link.url.as_str())
             .header(USER_AGENT,user_agent)
             .send() {
                 Ok(r) => r,
                 Err(e) => {
-                    println!("Error fetching URL {}: {:?}",link.url.as_str(),e);
+                    println!("Error fetching URL {}: {e:?}",link.url.as_str());
                     continue;
                 }
             };
 
         let mut bytes = Vec::new();
         if let Err(e) = response.copy_to(&mut bytes) {
-            println!("Error reading response body for {}: {:?}", link.url.as_str(), e);
+            println!("Error reading response body for {}: {e:?}",link.url.as_str());
             continue;
         }
 
         let body_str = String::from_utf8_lossy(&bytes);
         if body_str.contains("This content is no longer available") {
-            println!("Content unavailable at {}, using bypass server {}",link.url.as_str(),bypass_server);
+            println!("Content unavailable at {}, using bypass server {bypass_server}",link.url.as_str());
             let new_url = format!("{}{}",bypass_server,link.url.path());
             response = match client.get(&new_url)
                 .header(USER_AGENT,user_agent)
                 .send() {
                     Ok(r) => r,
                     Err(e) => {
-                        println!("Error fetching bypass server URL {}: {:?}",new_url,e);
+                        println!("Error fetching bypass server URL {new_url}: {e:?}");
                         continue;
                     }
                 };
 
             bytes.clear();
             if let Err(e) = response.copy_to(&mut bytes) {
-                println!("Error reading response body for bypass server URL {}: {:?}",new_url,e);
+                println!("Error reading response body for bypass server URL {new_url}: {e:?}");
                 continue;
             }
         }
@@ -262,17 +262,17 @@ fn download_media_links(links: Vec<ExtensionStampedUrl>,output_folder_path: &str
         let mut file = create_unique_file(output_path,&filename);
 
         if let Err(e) = file.write_all(&bytes) {
-            println!("Error writing data to file {}: {:?}",filename,e);
+            println!("Error writing data to file {filename}: {e:?}");
             continue;
         }
 
-        println!("Successfully saved file {}\n",filename);
+        println!("Successfully saved file {filename}\n");
     }
 }
 
 fn display_extension_host_distribution(urls: &Vec<ExtensionStampedUrl>) {
     let mut extension_counts: HashMap<String,usize> = HashMap::new();
-    let mut host_counts:     HashMap<String, usize> = HashMap::new();
+    let mut host_counts:      HashMap<String,usize> = HashMap::new();
 
     for url in urls {
         if let Some(ref ext) = url.extension {
@@ -284,11 +284,11 @@ fn display_extension_host_distribution(urls: &Vec<ExtensionStampedUrl>) {
         }
     }
 
-    let mut sorted_host_counts: Vec<(String, usize)> = host_counts.into_iter().collect();
-    sorted_host_counts.sort_by_key(|&(_, count)| Reverse(count));
+    let mut sorted_host_counts: Vec<(String,usize)> = host_counts.into_iter().collect();
+    sorted_host_counts.sort_by_key(|&(_,count)| Reverse(count));
 
-    let mut sorted_extension_counts: Vec<(String, usize)> = extension_counts.into_iter().collect();
-    sorted_extension_counts.sort_by_key(|&(_, count)| Reverse(count));
+    let mut sorted_extension_counts: Vec<(String,usize)> = extension_counts.into_iter().collect();
+    sorted_extension_counts.sort_by_key(|&(_,count)| Reverse(count));
 
     println!("Host distribution:");
     for (host, count) in sorted_host_counts {
@@ -310,7 +310,7 @@ fn display_channel_meta(data: ChannelData) {
     if data.recipients.is_some() {
         println!("| - Recipients:");
         for recipient in data.recipients.unwrap() {
-            println!("  | - {}",recipient);
+            println!("  | - {recipient}");
         }
     }
 }
