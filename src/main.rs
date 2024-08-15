@@ -1,4 +1,4 @@
-use std::{env,fs,io::Write,path::{self, Path},collections::HashMap};
+use std::{env,fs,io::{self,Write},path::{self, Path},cmp::Reverse,collections::{HashMap,HashSet}};
 use itertools::Itertools;
 use serde_json;
 use serde::Deserialize;
@@ -6,7 +6,6 @@ use linkify::{LinkFinder,LinkKind};
 use url_normalizer;
 use url::Url;
 use reqwest::{self, header::USER_AGENT};
-
 
 #[allow(dead_code)]
 #[derive(Deserialize)]
@@ -26,9 +25,10 @@ struct ChannelMessages{
 }
 
 #[derive(Clone)]
-struct TimestampedUrl{
+struct ExtensionStampedUrl{
     url: Url,
-    stamp: String
+    stamp: String,
+    extension: Option<String>
 }
 
 fn main() -> std::process::ExitCode {
@@ -39,6 +39,8 @@ fn main() -> std::process::ExitCode {
         return std::process::ExitCode::FAILURE
     }
 
+    println!("DISCORD MEDIA EXPORTER");
+    println!("----------------------");
     println!("Discord CDN bypass server: \"{}\"",args[3]);
     println!("Output Directory: \"{}\"\n",       args[2]);
 
@@ -56,18 +58,27 @@ fn main() -> std::process::ExitCode {
     let messages: Vec<ChannelMessages> = serde_json::from_str(&channel_messages).unwrap();
 
     display_channel_meta(meta);
-    let matched_links: Vec<TimestampedUrl> = find_links(messages);
+
+    let matched_links: Vec<ExtensionStampedUrl> = find_links(messages);
     println!("  - {} unique URLs found",matched_links.len());
+
     let media_links = filter_media_links(matched_links);
     println!("  - {} unique media links found\n",media_links.len());
+
+    display_extension_host_distribution(&media_links);
+    print!("Press Enter to continue...");
+    io::stdout().flush().expect("Failed to flush stdout");
+    io::stdin().read_line(&mut String::new()).expect("Failed to read line");
+
     download_media_links(media_links,&args[2],&args[3]);
+
     println!("Finished downloading media.");
 
     std::process::ExitCode::SUCCESS
 }
 
-fn find_links(messages: Vec<ChannelMessages>) -> Vec<TimestampedUrl> {
-    let mut matched_links: Vec<TimestampedUrl> = Vec::new();
+fn find_links(messages: Vec<ChannelMessages>) -> Vec<ExtensionStampedUrl> {
+    let mut matched_links: Vec<ExtensionStampedUrl> = Vec::new();
 
     let link_matcher = LinkFinder::new();
 
@@ -76,11 +87,11 @@ fn find_links(messages: Vec<ChannelMessages>) -> Vec<TimestampedUrl> {
     for msg in &messages {
         for link in link_matcher.links(&msg.Contents) {
             if link.kind() == &LinkKind::Url {
-                let url:TimestampedUrl = TimestampedUrl{url: url_normalizer::normalize(
+                let url:ExtensionStampedUrl = ExtensionStampedUrl{url: url_normalizer::normalize(
                     Url::parse(
                         link.as_str()
                     ).unwrap()
-                ).unwrap(),stamp: msg.Timestamp.clone()};
+                ).unwrap(),stamp: msg.Timestamp.clone(),extension: None};
 
                 matched_links.push(url);
             }
@@ -89,11 +100,11 @@ fn find_links(messages: Vec<ChannelMessages>) -> Vec<TimestampedUrl> {
         for link in link_matcher.links(&msg.Attachments) {
 
             if link.kind() == &LinkKind::Url {
-                let url:TimestampedUrl = TimestampedUrl{url: url_normalizer::normalize(
+                let url:ExtensionStampedUrl = ExtensionStampedUrl{url: url_normalizer::normalize(
                     Url::parse(
                         link.as_str()
                     ).unwrap()
-                ).unwrap(),stamp: msg.Timestamp.clone()};
+                ).unwrap(),stamp: msg.Timestamp.clone(),extension: None};
 
                 matched_links.push(url);
             }
@@ -103,7 +114,7 @@ fn find_links(messages: Vec<ChannelMessages>) -> Vec<TimestampedUrl> {
     println!("  - {} links found",matched_links.len());
     println!("Normalizing URLs..");
 
-    let mut unique_urls: HashMap<String,TimestampedUrl> = HashMap::new();
+    let mut unique_urls: HashMap<String,ExtensionStampedUrl> = HashMap::new();
 
     matched_links.iter().for_each(|url| {
         let key = format!(
@@ -115,26 +126,39 @@ fn find_links(messages: Vec<ChannelMessages>) -> Vec<TimestampedUrl> {
         unique_urls.insert(key,url.clone());
     });
 
-    let result: Vec<TimestampedUrl> = unique_urls.values().cloned().collect_vec();
+    let result: Vec<ExtensionStampedUrl> = unique_urls.values().cloned().collect_vec();
 
     result
 }
 
-fn filter_media_links(links: Vec<TimestampedUrl>) -> Vec<TimestampedUrl> {
-    let mut result: Vec<TimestampedUrl> = Vec::new();
+fn is_media_file(path: &str,extension_set: &HashSet<&str>) -> bool {
+    extension_set.iter().any(|&ext| path.ends_with(&(String::from(".")+ext)))
+}
+
+fn filter_media_links(links: Vec<ExtensionStampedUrl>) -> Vec<ExtensionStampedUrl> {
+    let mut result: Vec<ExtensionStampedUrl> = Vec::new();
 
     println!("Filtering media links..");
 
+    let extensions: HashSet<&str> = [
+        "mid","mp3","m4a","m3u","ogg","wav","wma","flac","aif",                            // audio files
+        "3gp","asf","avi","m4v","mov","mp4","mpg","srt","swf","ts","vob","wmv",            // video files
+        "3dm","3ds","blend","dae","fbx","max","obj",                                       // model files
+        "bmp","dcm","dds","djvu","gif","heic","jpg","jpeg","png","psd","tga","tif","tiff", // raster image files
+        "ai","cdr","emf","eps","ps","sketch","svg","vsdx",                                 // vector images
+        "dgn","dwg","dxf","step","stl","stp",                                              // CAD files
+        // "txt",
+    ].iter().copied().collect();
+
     for link in links.iter() {
-        let path:  String = link.url.path().to_lowercase();
+        let path: &str = &link.url.path().to_lowercase();
 
-        let media: bool = path.ends_with("mp4")
-        || path.ends_with("png")
-        || path.ends_with("jpg")
-        || path.ends_with("gif");
+        if is_media_file(path,&extensions) {
+            let mut link = link.to_owned();
 
-        if media {
-            result.push(link.to_owned());
+            link.extension = Some(path.rsplit('.').next().unwrap().to_string());
+
+            result.push(link);
         }
     }
 
@@ -180,15 +204,15 @@ fn truncate_filename(filename: &str, max_length: usize) -> String {
 }
 
 const MAX_FILENAME_LENGTH: usize = 100;
-fn download_media_links(links: Vec<TimestampedUrl>,output_folder_path: &str,bypass_server: &str) {
-    let mut i: u32 = 0;
+fn download_media_links(links: Vec<ExtensionStampedUrl>,output_folder_path: &str,bypass_server: &str) {
+    let mut i: usize = 0;
 
     let client   = reqwest::blocking::Client::new();
     let user_agent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) discord/0.0.52 Chrome/120.0.6099.291 Electron/28.2.10 Safari/537.36";
 
     for link in links.iter() {
         i += 1;
-        println!("({}/{}) Downloading media from: \"{}\"",i,links.len(),link.url.as_str());
+        println!("({:.1}% {}/{}) Downloading media from: \"{}\"",(i as f64)/(links.len() as f64)*100f64,i,links.len(),link.url.as_str());
 
         let mut response = match client.get(link.url.as_str())
             .header(USER_AGENT,user_agent)
@@ -246,14 +270,47 @@ fn download_media_links(links: Vec<TimestampedUrl>,output_folder_path: &str,bypa
     }
 }
 
+fn display_extension_host_distribution(urls: &Vec<ExtensionStampedUrl>) {
+    let mut extension_counts: HashMap<String,usize> = HashMap::new();
+    let mut host_counts:     HashMap<String, usize> = HashMap::new();
+
+    for url in urls {
+        if let Some(ref ext) = url.extension {
+            *extension_counts.entry(ext.clone()).or_insert(0) += 1;
+        }
+
+        if let Some(host) = url.url.host_str() {
+            *host_counts.entry(host.to_string()).or_insert(0) += 1;
+        }
+    }
+
+    let mut sorted_host_counts: Vec<(String, usize)> = host_counts.into_iter().collect();
+    sorted_host_counts.sort_by_key(|&(_, count)| Reverse(count));
+
+    let mut sorted_extension_counts: Vec<(String, usize)> = extension_counts.into_iter().collect();
+    sorted_extension_counts.sort_by_key(|&(_, count)| Reverse(count));
+
+    println!("Host distribution:");
+    for (host, count) in sorted_host_counts {
+        println!("| - {host}: {count}x");
+    }
+
+    println!("\nFile type distribution:");
+    for (ext, count) in sorted_extension_counts {
+        println!("| - {ext}: {count}x");
+    }
+
+    println!("");
+}
+
 fn display_channel_meta(data: ChannelData) {
     println!("Loading data for channel \"{}\"",data.name.unwrap_or(String::from("Unknown")));
-    println!("  - Channel type: {} ({})",data.r#type,get_channel_type(data.r#type));
-    println!("  - Channel ID:   {}",data.id);
+    println!("| - Channel type: {} ({})",data.r#type,get_channel_type(data.r#type));
+    println!("| - Channel ID:   {}",data.id);
     if data.recipients.is_some() {
-        println!("  - Recipients:");
+        println!("| - Recipients:");
         for recipient in data.recipients.unwrap() {
-            println!("    - {}",recipient);
+            println!("  | - {}",recipient);
         }
     }
 }
