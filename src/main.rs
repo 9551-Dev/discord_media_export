@@ -284,10 +284,10 @@ fn display_extension_host_distribution(urls: &Vec<ExtensionStampedUrl>) {
         }
     }
 
-    let mut sorted_host_counts: Vec<(String,usize)> = host_counts.into_iter().collect();
-    sorted_host_counts.sort_by_key(|&(_,count)| Reverse(count));
-
+    let mut sorted_host_counts:      Vec<(String,usize)> = host_counts     .into_iter().collect();
     let mut sorted_extension_counts: Vec<(String,usize)> = extension_counts.into_iter().collect();
+
+    sorted_host_counts     .sort_by_key(|&(_,count)| Reverse(count));
     sorted_extension_counts.sort_by_key(|&(_,count)| Reverse(count));
 
     println!("Host distribution:");
