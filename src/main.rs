@@ -268,8 +268,6 @@ fn download_media_links(links: Vec<ExtensionStampedUrl>,output_folder_path: &str
                 }
             };
 
-
-
             let new_url = match refreshed_urls["refreshed_urls"][0]["refreshed"].as_str() {
                 Some(url) => url.to_string(),
                 None => {
