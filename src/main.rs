@@ -5,7 +5,7 @@ use serde::Deserialize;
 use linkify::{LinkFinder,LinkKind};
 use url_normalizer;
 use url::Url;
-use reqwest::{self, header::USER_AGENT};
+use reqwest::{self, header::{AUTHORIZATION, CONTENT_TYPE, USER_AGENT}};
 
 #[allow(dead_code)]
 #[derive(Deserialize)]
@@ -35,13 +35,13 @@ fn main() -> std::process::ExitCode {
     let args: Vec<String> = env::args().collect();
 
     if args.len() < 4 {
-        println!("Usage: program <channel_id> <output_folder> <cdn_bypass_server_adress>");
+        println!("Usage: program <channel_id> <output_folder> <cdn_bypass_account_token>");
         return std::process::ExitCode::FAILURE
     }
 
     println!("DISCORD MEDIA EXPORTER");
     println!("----------------------");
-    println!("Discord CDN bypass server: \"{}\"",args[3]);
+    println!("Discord CDN bypass account token: \"{}\"",args[3]);
     println!("Output Directory: \"{}\"\n",       args[2]);
 
     let channel_id = String::from("./messages/c") + &args[1];
@@ -70,7 +70,7 @@ fn main() -> std::process::ExitCode {
     io::stdout().flush().expect("Failed to flush stdout");
     io::stdin().read_line(&mut String::new()).expect("Failed to read line");
 
-    download_media_links(media_links,&args[2],&args[3]);
+    download_media_links(media_links,&args[2],Option::from(args[3].to_string()));
 
     println!("Finished downloading media.");
 
@@ -204,11 +204,13 @@ fn truncate_filename(filename: &str, max_length: usize) -> String {
 }
 
 const MAX_FILENAME_LENGTH: usize = 100;
-fn download_media_links(links: Vec<ExtensionStampedUrl>,output_folder_path: &str,bypass_server: &str) {
+fn download_media_links(links: Vec<ExtensionStampedUrl>,output_folder_path: &str,api_token: Option<String>) {
     let mut i: usize = 0;
 
     let client   = reqwest::blocking::Client::new();
     let user_agent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) discord/0.0.52 Chrome/120.0.6099.291 Electron/28.2.10 Safari/537.36";
+
+    let has_token = api_token.is_some();
 
     for link in links.iter() {
         i += 1;
@@ -231,24 +233,69 @@ fn download_media_links(links: Vec<ExtensionStampedUrl>,output_folder_path: &str
         }
 
         let body_str = String::from_utf8_lossy(&bytes);
-        if body_str.contains("This content is no longer available") {
-            println!("Content unavailable at {}, using bypass server {bypass_server}",link.url.as_str());
-            let new_url = format!("{}{}",bypass_server,link.url.path());
-            response = match client.get(&new_url)
-                .header(USER_AGENT,user_agent)
+        if body_str.contains("This content is no longer available") && has_token {
+            println!("Content unavailable at {}, trying to refresh with token",link.url.as_str());
+
+            let post_body = serde_json::json!({
+                "attachment_urls": [link.url.as_str()]
+            });
+
+            let response = match client.post("https://discord.com/api/v9/attachments/refresh-urls")
+                .header(AUTHORIZATION,api_token.as_ref().unwrap())
+                .header(CONTENT_TYPE, "application/json")
+                .body(post_body.to_string())
                 .send() {
                     Ok(r) => r,
                     Err(e) => {
-                        println!("Error fetching bypass server URL {new_url}: {e:?}");
+                        println!("Error fetching refreshed URL from Discord API: {e:?}");
                         continue;
                     }
                 };
 
+            let response_text = match response.text() {
+                Ok(text) => text,
+                Err(e) => {
+                    println!("Error reading response body from Discord API: {e:?}");
+                    continue;
+                }
+            };
+
+            let refreshed_urls: serde_json::Value = match serde_json::from_str(&response_text) {
+                Ok(data) => data,
+                Err(e) => {
+                    println!("Error parsing JSON response from Discord API: {e:?}");
+                    continue;
+                }
+            };
+
+
+
+            let new_url = match refreshed_urls["refreshed_urls"][0]["refreshed"].as_str() {
+                Some(url) => url.to_string(),
+                None => {
+                    println!("No refreshed URL found in response from Discord API\n{response_text:?}\n");
+                    continue;
+                }
+            };
+
+            let mut response = match client.get(&new_url)
+                .header(USER_AGENT, user_agent)
+                .send() {
+                    Ok(r) => r,
+                    Err(e) => {
+                        println!("Error fetching refreshed URL {new_url}: {e:?}");
+                        continue;
+                    }
+                };
+
+
             bytes.clear();
             if let Err(e) = response.copy_to(&mut bytes) {
-                println!("Error reading response body for bypass server URL {new_url}: {e:?}");
+                println!("Error reading response body for refreshed URL {new_url}: {e:?}");
                 continue;
             }
+
+            println!("URL refreshed successfuly")
         }
 
         let filename = format!("{}_{}",link.stamp.replace(' ',"_"),link.url.path_segments()
@@ -291,12 +338,12 @@ fn display_extension_host_distribution(urls: &Vec<ExtensionStampedUrl>) {
     sorted_extension_counts.sort_by_key(|&(_,count)| Reverse(count));
 
     println!("Host distribution:");
-    for (host, count) in sorted_host_counts {
+    for (host,count) in sorted_host_counts {
         println!("| - {host}: {count}x");
     }
 
     println!("\nFile type distribution:");
-    for (ext, count) in sorted_extension_counts {
+    for (ext,count) in sorted_extension_counts {
         println!("| - {ext}: {count}x");
     }
 
